@@ -1,0 +1,65 @@
+pipeline {
+    agent {
+        node {
+            label 'master'
+            customWorkspace "${JENKINS_HOME}/workspace/${JOB_NAME}/${BUILD_NUMBER}"
+         }
+    }
+    tools { 
+        maven 'MAVEN' 
+        jdk 'Java JDK' 
+    }
+     parameters {
+        string(defaultValue: "localhost:8081", description: 'Nexus url', name: 'nexus_url')
+    }
+    stages {
+        stage ('Initialize') {
+            steps {
+                sh '''
+                    echo "PATH = ${PATH}"
+                    echo "M2_HOME = ${M2_HOME}"
+                ''' 
+            echo "${params.nexus_url}"
+            }
+        }
+        stage('user info') {
+            steps {
+                wrap([$class: 'BuildUser']) {
+                echo "${BUILD_USER}"
+                echo "${BUILD_USER_ID}"
+                echo "${BUILD_USER_EMAIL}"
+                }
+            }
+        }
+        stage ('git clone') {
+            steps {
+                git credentialsId: 'github', url: 'https://github.com/nikolinho/jenkins_first_pipeline.git'
+                echo "test"
+                sh "ls -la"
+                echo  "test2"
+            }
+        }
+        stage ('Build') {
+            steps {
+              sh 'mvn clean install'
+            }
+                post {
+                    success {
+                     junit 'target/surefire-reports/**/*.xml'
+                }
+            }
+        }    
+        stage ('Push artifacts') {
+            steps {
+                nexusArtifactUploader artifacts: [[artifactId: 'test_maven', classifier: '', file: '${JENKINS_HOME}/workspace/${JOB_NAME}/${BUILD_NUMBER}/target/java-maven-junit-helloworld-2.0-SNAPSHOT.jar', type: 'jar']], credentialsId: 'localNexus', groupId: 'pipelinaArtifacts', nexusUrl: params.nexus_url, nexusVersion: 'nexus3', protocol: 'http', repository: 'maven-releases/', version: "${BUILD_NUMBER}"
+            }
+        }
+            
+    }
+	post {
+        always {
+            deleteDir()
+            cleanWs()
+        }
+	}
+}
