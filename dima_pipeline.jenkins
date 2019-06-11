@@ -1,0 +1,135 @@
+pipeline {
+  agent {
+    node {
+      label 'maven'
+      customWorkspace " /var/lib/jenkins/workspace/${JOB_NAME}/${BUILD_NUMBER}"
+    }
+  }
+  options {
+    skipDefaultCheckout true
+  }
+  tools {
+    maven 'MAVEN'
+    jdk 'Java JDK'
+  }
+  parameters {
+    string(defaultValue: "localhost:8081", description: 'Nexus url and port', name: 'nexus')
+    string(defaultValue: "", description: 'Email for sending report. Must be defined.', name: 'requesterEmail')
+    string(defaultValue: 'git@github.com:Otark/maven.git', description: 'Git url for build', name: 'gitUrl')
+  }
+  stages {
+/*
+    stage("Another windows agent usage example") {
+      agent {
+        label "another_agent && windows"
+      }
+      steps {
+        echo "another_agent example"
+        bat "dir > test.txt"
+        bat "copy test.txt con"
+      }
+      post {
+        always {
+          deleteDir()
+          cleanWs()
+        }
+      }
+    }
+*/
+    stage('Read Parameters') {
+      steps {
+        script {
+          params.each{k, v -> echo "[INFO] $k: $v" }
+        }
+      }
+    }
+    stage("Validate parameters") {
+      steps {
+        script {
+          if ("${params.requesterEmail}" == null || "${params.requesterEmail}" == '') {
+            currentBuild.result = 'ABORTED'
+            error("Email should be specified\n")
+          }
+
+          if (params.nexus == null || params.nexus == '') {
+            currentBuild.result = 'ABORTED'
+            error("Nexus URL was not defined. Aborted.\n")
+          }
+
+        }
+      }
+    }
+    stage("Job Description") {
+      steps {
+        script {
+          def description = "${JOB_NAME}/${BUILD_NUMBER} [${env.NODE_NAME}]"
+          currentBuild.setDescription(description)
+        }
+      }
+    }
+    stage ('git clone') {
+      steps {
+        git credentialsId: 'github', url: params.gitUrl
+      }
+    }
+    stage ('Build') {
+      steps {
+        timeout (15) {
+          sh 'mvn clean install'
+        }
+      }
+    }
+    stage ('Run tests') {
+      steps {
+        script {
+          try {
+            junit 'target/surefire-reports/**/*.xml'
+          }
+          catch(err){
+            currentBuild.result = 'UNSTABLE'
+          }
+        }
+      }
+    }
+    stage ('Push artifacts') {
+      steps {
+        withCredentials([[$class: 'UsernamePasswordMultiBinding', credentialsId: 'NexusPassword', usernameVariable: 'USERNAME', passwordVariable: 'PASSWORD']]) {
+          sh "curl -u ${USERNAME}:${PASSWORD} -X PUT -T  /var/lib/jenkins/workspace/${JOB_NAME}/${BUILD_NUMBER}/target/java-maven-junit-helloworld-2.0-SNAPSHOT.jar http://${params.nexus}/repository/test_repo/"
+        }
+      //  nexusArtifactUploader artifacts: [[artifactId: 'test_maven', classifier: '', file: '${JENKINS_HOME}/workspace/${JOB_NAME}/${BUILD_NUMBER}/target/java-maven-junit-helloworld-2.0-SNAPSHOT.jar', type: 'jar']], credentialsId: 'localNexus', groupId: 'pipelinaArtifacts', nexusUrl: params.nexus, nexusVersion: 'nexus3', protocol: 'http', repository: 'maven-releases/', version: "${BUILD_NUMBER}"
+      }
+    }
+  }
+  post {
+    always {
+      script {
+        currentBuild.result = currentBuild.result ?: 'SUCCESS'
+// For email must be installed and configured "Email Extension Plugin"
+        def body_html = ''
+        if ("${currentBuild.result}" == 'SUCCESS') {
+          subjText = "Success Jenkins build ${JOB_NAME}/${BUILD_NUMBER}"
+          body_html = "<p>Job ${JOB_NAME} build number ${BUILD_NUMBER} was success</p>" +
+          "<p>Congratulations!</p>\n"
+        }
+        else {
+          subjText ="Failed or unstable Jenkins build ${JOB_NAME}/${BUILD_NUMBER}"
+          body_html = "<p>Job ${JOB_NAME} build number ${BUILD_NUMBER} was failed or tests failed</p>" +
+          "<p>Job url for check: ${env.BUILD_URL}</p>\n"
+        }
+        emailext (
+          body: body_html,
+          mimeType: 'text/html',
+          subject: "${subjText}",
+          to: "${params.requesterEmail}"
+        )
+        try {
+          deleteDir()
+          cleanWs()
+        }
+        catch(err){
+          println "Can't clean folder: ${err}"
+        }
+      }
+    }
+  }
+}
